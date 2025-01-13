@@ -33,12 +33,12 @@ sudo apt-get install grub2 util-linux coreutils
 
 1. Make the script executable:
 ```bash
-chmod +x windows_iso_boot.sh
+chmod +x lnxboot.sh
 ```
 
 2. Run the script with sudo:
 ```bash
-sudo ./windows_iso_boot.sh /path/to/your/windows.iso
+sudo ./lnxboot.sh /path/to/your/windows.iso
 ```
 
 3. The script will display all available partitions:
