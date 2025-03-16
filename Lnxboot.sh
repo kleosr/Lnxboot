@@ -1,15 +1,28 @@
 #!/bin/bash
 
-# Check if script is run as root
+# ╔═══════════════════════════════════════════╗
+# ║         Linux Windows Boot Setup          ║
+# ║    Because dual-booting should be easy    ║
+# ║                                          ║
+# ║  Created by: A sleep-deprived developer  ║
+# ║  Last updated: When coffee was hot       ║
+# ╚═══════════════════════════════════════════╝
+
+# Fail fast if something goes wrong
+set -e
+
+# Trust me, you'll need this as root
 if [ "$EUID" -ne 0 ]; then 
-    echo "Please run as root (use sudo)"
+    echo "🛑 Hey! You need to run this with sudo!"
+    echo "Try: sudo $0 /path/to/your/windows.iso"
     exit 1
 fi
 
-# Check if ISO path is provided
+# No ISO? No party!
 if [ -z "$1" ]; then
-    echo "Please provide the path to Windows ISO"
+    echo "🤔 Hmm... Where's the Windows ISO?"
     echo "Usage: $0 /path/to/windows.iso"
+    echo "Pro tip: Make sure it's a legit Windows ISO"
     exit 1
 fi
 
@@ -17,93 +30,111 @@ ISO_PATH="$1"
 MOUNT_POINT="/mnt/windows_iso_temp"
 ISO_MOUNT="/mnt/iso_temp"
 
-# Show available partitions
-echo "Available partitions:"
+# Show what we're working with
+echo "🔍 Let's see what drives you've got..."
 echo "----------------------------------------"
-lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT,LABEL -p | grep "sd[a-z][0-9]"
+lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT,LABEL -p | grep "sd[a-z][0-9]" || echo "No drives found? That's weird... 🤔"
 echo "----------------------------------------"
 
-# Ask user to select partition
-echo "Enter the partition name where you want to install Windows (e.g., /dev/sda3):"
-read -p "Partition: " TARGET_PARTITION
+# Let's pick a victim... err, I mean, partition
+echo "⌨️  Which partition should we use for Windows? (e.g., /dev/sda3)"
+echo "WARNING: Choose wisely! This will DESTROY everything on that partition!"
+read -p "Type partition path here: " TARGET_PARTITION
 
-# Verify the partition exists
+# Make sure we're not crazy
 if ! lsblk "$TARGET_PARTITION" >/dev/null 2>&1; then
-    echo "Error: Partition $TARGET_PARTITION not found!"
+    echo "❌ Oops! Can't find $TARGET_PARTITION"
+    echo "Did you type it correctly? No typos? 🤔"
     exit 1
 fi
 
-# Get partition information
+# Get the details (because math is hard)
 PART_SIZE=$(lsblk -b -n -o SIZE "$TARGET_PARTITION" | head -n1)
 PART_NAME=$(basename "$TARGET_PARTITION")
 DISK_NAME=$(echo "$PART_NAME" | sed 's/[0-9]//g')
 PART_NUM=$(echo "$PART_NAME" | sed 's/[^0-9]//g')
 
-echo "Selected partition details:"
+echo "🎯 Here's what you picked:"
 echo "----------------------------------------"
 lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT,LABEL -p "$TARGET_PARTITION"
 echo "----------------------------------------"
 
-# Confirm with user
-read -p "Are you sure you want to use this partition? This will erase all data on it. (y/N): " confirm
+# Last chance to back out...
+echo "⚠️  POINT OF NO RETURN ⚠️"
+read -p "Sure about this? Your data will be GONE! (type 'y' to continue): " confirm
 if [[ ! "$confirm" =~ ^[yY]$ ]]; then
-    echo "Operation cancelled."
+    echo "😅 Phew! Crisis averted. Come back when you're ready!"
     exit 1
 fi
 
-# Check if ISO exists
+# Check if ISO exists (and is actually an ISO)
 if [ ! -f "$ISO_PATH" ]; then
-    echo "ISO file not found: $ISO_PATH"
+    echo "❌ Can't find the ISO at: $ISO_PATH"
+    echo "Did you download it? Is the path correct?"
     exit 1
 fi
 
-# Create mount points
-echo "Creating mount points..."
+# Time to do the actual work
+echo "🚀 Alright, let's do this! (Might take a while, grab a coffee)"
+
+# Create mount points (and clean up any leftovers)
+echo "📁 Making some temporary folders..."
+rm -rf "$MOUNT_POINT" "$ISO_MOUNT" 2>/dev/null || true
 mkdir -p "$MOUNT_POINT" "$ISO_MOUNT"
 
-# Mount the ISO
-echo "Mounting ISO..."
-mount -o loop "$ISO_PATH" "$ISO_MOUNT"
+# Mount the ISO (pray it works)
+echo "💿 Mounting the Windows ISO..."
+mount -o loop "$ISO_PATH" "$ISO_MOUNT" || {
+    echo "❌ Failed to mount ISO! Is it corrupted?"
+    exit 1
+}
 
-# Mount the target partition
-echo "Mounting target partition..."
+# Mount target partition
+echo "💽 Mounting your partition..."
 umount "$TARGET_PARTITION" 2>/dev/null || true
-mount "$TARGET_PARTITION" "$MOUNT_POINT"
+mount "$TARGET_PARTITION" "$MOUNT_POINT" || {
+    echo "❌ Failed to mount partition! Is it formatted?"
+    umount "$ISO_MOUNT" 2>/dev/null
+    exit 1
+}
 
-# Copy Windows installation files
-echo "Copying Windows installation files (this may take a while)..."
-cp -r "$ISO_MOUNT"/* "$MOUNT_POINT/"
+# Copy Windows files (this is where people usually go make coffee)
+echo "📝 Copying Windows files... (perfect time for ☕)"
+echo "This might take a while... Like, a WHILE while..."
+cp -r "$ISO_MOUNT"/* "$MOUNT_POINT/" || {
+    echo "❌ Copy failed! Check disk space maybe?"
+    umount "$ISO_MOUNT" 2>/dev/null
+    umount "$MOUNT_POINT" 2>/dev/null
+    exit 1
+}
 
-# Create boot configuration
-echo "Setting up boot configuration..."
+# Boot config (fingers crossed)
+echo "⚙️ Setting up boot stuff..."
 if [ -d "$MOUNT_POINT/boot" ]; then
     mkdir -p "$MOUNT_POINT/boot/grub" 2>/dev/null
     cp "$ISO_MOUNT/boot/grub/memdisk" "$MOUNT_POINT/boot/grub/" 2>/dev/null
     cp "$ISO_MOUNT/boot/grub/win.iso" "$MOUNT_POINT/boot/grub/" 2>/dev/null
 fi
 
-# Sync and cleanup
-echo "Finalizing installation..."
+# The cleanup crew
+echo "🧹 Cleaning up..."
 sync
-
-# Unmount everything
-umount "$ISO_MOUNT"
-umount "$MOUNT_POINT"
+umount "$ISO_MOUNT" || echo "Warning: Couldn't unmount ISO, but it's probably fine..."
+umount "$MOUNT_POINT" || echo "Warning: Couldn't unmount partition, but it's probably fine..."
 rm -rf "$ISO_MOUNT" "$MOUNT_POINT"
 
-# Create custom GRUB entry
+# GRUB magic
 GRUB_CUSTOM_FILE="/etc/grub.d/40_custom"
 
-# Backup existing custom file if it exists
-if [ -f "$GRUB_CUSTOM_FILE" ]; then
-    cp "$GRUB_CUSTOM_FILE" "${GRUB_CUSTOM_FILE}.backup"
-fi
+# Backup because we're not savages
+[ -f "$GRUB_CUSTOM_FILE" ] && cp "$GRUB_CUSTOM_FILE" "${GRUB_CUSTOM_FILE}.backup"
 
-echo "Creating GRUB entry..."
+echo "🔧 Adding GRUB menu entry..."
 cat << EOF > "$GRUB_CUSTOM_FILE"
 #!/bin/sh
 exec tail -n +3 \$0
-menuentry "Windows Installation (on $TARGET_PARTITION)" {
+# Added by Lnxboot.sh - Your friendly Windows installer
+menuentry "Windows (on $TARGET_PARTITION) 🪟" {
     insmod part_gpt
     insmod fat
     insmod search_fs_uuid
@@ -114,24 +145,28 @@ menuentry "Windows Installation (on $TARGET_PARTITION)" {
 }
 EOF
 
-# Make the custom file executable
 chmod +x "$GRUB_CUSTOM_FILE"
 
-# Generate GRUB configuration
-echo "Generating GRUB configuration..."
+echo "🔄 Updating GRUB..."
 grub-mkconfig -o /boot/grub/grub.cfg
 
-echo "Setup complete! Here are some important notes:"
-echo "1. Windows installation files have been copied to: $TARGET_PARTITION"
-echo "2. When you reboot, select 'Windows Installation (on $TARGET_PARTITION)' from the GRUB menu"
-echo "3. The Windows installation will start automatically"
-echo "4. During installation:"
-echo "   - The partition is already prepared"
-echo "   - Follow the Windows installation prompts"
-echo "   - When asked where to install, select the partition you chose ($TARGET_PARTITION)"
-echo "   - Partition size: $(( $PART_SIZE / 1024 / 1024 / 1024 )) GB"
-echo ""
-echo "Current partition status:"
+echo "
+🎉 All done! Here's what you need to know:
+----------------------------------------
+1. Windows stuff is now on: $TARGET_PARTITION
+2. Partition size: $(( $PART_SIZE / 1024 / 1024 / 1024 )) GB
+3. When you reboot:
+   - Pick 'Windows (on $TARGET_PARTITION) 🪟' from the boot menu
+   - Follow the Windows installer (you know, Next, Next, Next...)
+   - When it asks where to install, pick the partition you chose
+
+Current partition status:
+----------------------------------------"
 lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT,LABEL -p "$TARGET_PARTITION"
-echo ""
-echo "You can now reboot your system to start the Windows installation."
+echo "
+🔥 Pro Tips:
+- If it doesn't boot, try running 'update-grub' again
+- Make sure Secure Boot is disabled in BIOS
+- If all else fails, there's always StackOverflow 😉
+
+Now might be a good time to reboot! Good luck! 🚀"
