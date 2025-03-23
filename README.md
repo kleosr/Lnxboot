@@ -1,109 +1,158 @@
-# 🪟 Lnxboot - Windows ISO Installer for Linux
+# Lnxboot - Universal Linux-Windows Dual Boot Setup Utility
 
-> Because who needs a USB stick anyway? 🤷‍♂️
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-Hey there! 👋 Tired of hunting for USB drives just to install Windows? This script's got your back! Install Windows directly from an ISO to any partition on your Linux machine. Perfect for dual-boot setups or when you just *need* Windows for that one specific thing (we've all been there).
+A robust command-line utility for setting up Windows dual-boot environments on Linux systems. Lnxboot automates the process of creating a bootable Windows installation environment from an ISO file, handling partitioning, and configuring the bootloader across various Linux distributions.
 
-## ✨ What's Cool About This?
+## Features
 
-- 🚫 No USB drive needed - save your USB for something else!
-- 💪 Works with Windows 10 & 11
-- 🔄 Supports both modern (UEFI) and legacy BIOS
-- 🐧 Works on most Linux distros with GRUB
-- 🎯 Super simple to use (seriously, it's just one command!)
+- **Universal Distribution Support**: Compatible with major Linux distributions and package managers
+- **Automatic Package Management**: Supports apt, dnf, pacman, zypper, and rpm-ostree
+- **UEFI and Legacy BIOS Support**: Handles both modern UEFI and legacy BIOS systems
+- **Secure Boot Configuration**: Provides guidance for Secure Boot settings
+- **Comprehensive Logging**: Detailed logging for troubleshooting
+- **Data Safety**: Multiple confirmation steps and backup creation
+- **Smart Drive Detection**: Supports both SATA and NVMe storage devices
 
-## 📋 Before You Start
+## Prerequisites
 
-You'll need:
-- A Linux system (duh! 😉)
-- Root access (sudo privileges)
-- GRUB bootloader
-- A partition for Windows (30GB+ recommended)
-- A Windows ISO file (grab it from Microsoft)
+- Root privileges (sudo access)
+- A valid Windows ISO file
+- Sufficient disk space for Windows installation
+- One of the following package managers:
+  - apt (Debian/Ubuntu)
+  - dnf/yum (Fedora/RHEL)
+  - pacman (Arch Linux)
+  - zypper (openSUSE)
+  - rpm-ostree (Fedora Silverblue/Kinoite)
 
-## 🛠️ Get These Packages First
+## Required Packages
+
+The script will automatically install these if missing:
+- ntfs-3g
+- grub2-tools or grub-common
+- util-linux
+- coreutils
+
+## Installation
 
 ```bash
-# On Arch (btw) 😎
-sudo pacman -S grub util-linux coreutils
-
-# On Ubuntu/Debian
-sudo apt-get install grub2 util-linux coreutils
+git clone https://github.com/yourusername/lnxboot.git
+cd lnxboot
+chmod +x Lnxboot.sh
 ```
 
-## 🚀 Let's Do This!
+## Usage
 
-1. Make it executable:
 ```bash
-chmod +x lnxboot.sh
+sudo ./Lnxboot.sh /path/to/windows.iso
 ```
 
-2. Run it (with sudo, because we're doing some serious stuff here):
+### Example
+
 ```bash
-sudo ./lnxboot.sh /path/to/your/windows.iso
+sudo ./Lnxboot.sh ~/Downloads/Windows11.iso
 ```
 
-3. Pick your partition when it shows you something like this:
-```
-🔍 Let's see what drives you've got...
-----------------------------------------
-NAME    SIZE  FSTYPE MOUNTPOINT LABEL
-/dev/sda1  200M  vfat   /boot/efi
-/dev/sda2  50G   ext4   /        
-/dev/sda3  30G   vfat              <- Maybe this one? 😉
-----------------------------------------
-```
+## Supported Distributions
 
-4. Follow the prompts (they're friendly, promise!)
-5. Reboot when it's done
-6. Pick "Windows" from your GRUB menu
-7. Finish the Windows setup like usual
+- Fedora (including Silverblue/Kinoite)
+- Ubuntu/Debian
+- Arch Linux
+- openSUSE
+- Red Hat Enterprise Linux
+- Other distributions using supported package managers
 
-## ⚠️ Heads Up!
+## System Requirements
 
-- **BACKUP YOUR STUFF!** Seriously, the script will format the partition you choose
-- Need at least 30GB for Windows (more if you like installing games)
-- Don't accidentally format your Linux partition (that would be a bad day 😅)
-- If you've got Secure Boot enabled in BIOS, turn it off
-- Make sure your Windows ISO is legit and not corrupted
+- **Minimum Disk Space**: 
+  - 64GB for Windows 11
+  - 32GB for Windows 10
+- **Partition Type**: GPT for UEFI systems, MBR for Legacy BIOS
+- **File Systems**: NTFS support required
+- **Boot System**: GRUB2 bootloader
 
-## 🔧 Common Gotchas & Fixes
+## Safety Measures
 
-Having issues? Don't panic! Try these:
+1. Automatic backup of GRUB configuration
+2. Multiple user confirmations before destructive operations
+3. Comprehensive error checking
+4. Safe cleanup on script termination
+5. Detailed logging for troubleshooting
 
-1. **"No space left"** error?
-   - Check if you've got enough space (duh!)
-   - Make sure the partition isn't mounted
+## Troubleshooting
 
-2. **Can't see Windows in GRUB?**
+### Common Issues
+
+1. **GRUB Not Updated**
    ```bash
-   # Ubuntu/Debian folks:
-   sudo update-grub
-
-   # Arch gang:
-   sudo grub-mkconfig -o /boot/grub/grub.cfg
+   sudo grub2-mkconfig -o /boot/grub2/grub.cfg   # For RHEL-based systems
+   sudo update-grub                              # For Debian-based systems
    ```
 
-3. **See some read-only warnings?**
-   - That's normal! ISOs are always read-only
-   - Your installation will work fine
+2. **Package Manager Errors**
+   ```bash
+   # Manual package installation
+   # Debian/Ubuntu
+   sudo apt install ntfs-3g grub-common
+   
+   # Fedora
+   sudo dnf install ntfs-3g grub2-tools
+   
+   # Arch Linux
+   sudo pacman -S ntfs-3g grub
+   
+   # openSUSE
+   sudo zypper install ntfs-3g grub2
+   
+   # Fedora Silverblue/Kinoite
+   sudo rpm-ostree install ntfs-3g grub2-tools
+   ```
 
-## 🤝 Wanna Help?
+3. **Secure Boot Issues**
+   - Disable Secure Boot in BIOS/UEFI settings
+   - Enable CSM (Compatibility Support Module) if available
 
-Found a bug? Got an idea? Want to help? Awesome!
+## Logging
 
-1. Open an issue - tell us what's up
-2. Got improvements? Send a PR!
-3. Share it with others who might need it
+- Log file location: `/var/log/lnxboot.log`
+- Contains detailed information about:
+  - Package installation attempts
+  - Partition operations
+  - GRUB configuration changes
+  - Error messages
 
-## 📜 License
+## Security Considerations
 
-MIT License - do whatever you want with it! Just don't blame us if something goes wrong 😉
+- Script requires root privileges
+- Creates backups of critical system files
+- Verifies file integrity before operations
+- Sanitizes user inputs
+- Handles sensitive operations safely
 
-## 👏 Credits
+## Contributing
 
-Made with ❤️ (and lots of ☕) by the community
-Maintained by KleoSr
+1. Fork the repository
+2. Create a feature branch
+3. Commit your changes
+4. Push to the branch
+5. Create a Pull Request
 
----
-*P.S. If this script saved you from hunting for a USB drive, maybe give it a star? 🌟*
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Disclaimer
+
+This script modifies system boot configuration and partitions. While it includes safety measures, always backup important data before use. The authors are not responsible for data loss or system issues.
+
+## Author
+
+- Original Author: kleosr
+
+## Version History
+
+- 1.0.0: Initial release
+- 1.1.0: Added universal distribution support
+- 1.2.0: Enhanced UEFI support
+- 1.3.0: Added comprehensive logging
