@@ -1,158 +1,62 @@
-# Lnxboot - Universal Linux-Windows Dual Boot Setup Utility
+# Lnxboot - Windows Dual Boot Made Simple
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+A straightforward script that sets up Windows dual-boot on Linux systems. Just point it at a Windows ISO and it handles the rest.
 
-A robust command-line utility for setting up Windows dual-boot environments on Linux systems. Lnxboot automates the process of creating a bootable Windows installation environment from an ISO file, handling partitioning, and configuring the bootloader across various Linux distributions.
+## What it does
 
-## Features
+- Copies Windows installation files to a partition you choose
+- Sets up GRUB to boot Windows alongside Linux
+- Works with both UEFI and Legacy BIOS systems
+- Supports most Linux distributions automatically
 
-- **Universal Distribution Support**: Compatible with major Linux distributions and package managers
-- **Automatic Package Management**: Supports apt, dnf, pacman, zypper, and rpm-ostree
-- **UEFI and Legacy BIOS Support**: Handles both modern UEFI and legacy BIOS systems
-- **Secure Boot Configuration**: Provides guidance for Secure Boot settings
-- **Comprehensive Logging**: Detailed logging for troubleshooting
-- **Data Safety**: Multiple confirmation steps and backup creation
-- **Smart Drive Detection**: Supports both SATA and NVMe storage devices
-
-## Prerequisites
-
-- Root privileges (sudo access)
-- A valid Windows ISO file
-- Sufficient disk space for Windows installation
-- One of the following package managers:
-  - apt (Debian/Ubuntu)
-  - dnf/yum (Fedora/RHEL)
-  - pacman (Arch Linux)
-  - zypper (openSUSE)
-  - rpm-ostree (Fedora Silverblue/Kinoite)
-
-## Required Packages
-
-The script will automatically install these if missing:
-- ntfs-3g
-- grub2-tools or grub-common
-- util-linux
-- coreutils
-
-## Installation
-
-```bash
-git clone https://github.com/yourusername/lnxboot.git
-cd lnxboot
-chmod +x Lnxboot.sh
-```
-
-## Usage
+## Quick start
 
 ```bash
 sudo ./Lnxboot.sh /path/to/windows.iso
 ```
 
-### Example
+That's it. The script will:
+1. Show you available partitions
+2. Ask which one to use for Windows
+3. Format it and copy the Windows files
+4. Add Windows to your boot menu
 
-```bash
-sudo ./Lnxboot.sh ~/Downloads/Windows11.iso
-```
+## Requirements
 
-## Supported Distributions
+- Root access (sudo)
+- A Windows ISO file
+- At least 20GB free space on target partition
+- One of these package managers: apt, dnf, yum, pacman, zypper, or rpm-ostree
 
-- Fedora (including Silverblue/Kinoite)
+The script installs any missing packages automatically.
+
+## Supported systems
+
+Works on most Linux distributions including:
 - Ubuntu/Debian
+- Fedora/RHEL
 - Arch Linux
 - openSUSE
-- Red Hat Enterprise Linux
-- Other distributions using supported package managers
+- Fedora Silverblue/Kinoite
 
-## System Requirements
+## Important notes
 
-- **Minimum Disk Space**: 
-  - 64GB for Windows 11
-  - 32GB for Windows 10
-- **Partition Type**: GPT for UEFI systems, MBR for Legacy BIOS
-- **File Systems**: NTFS support required
-- **Boot System**: GRUB2 bootloader
+- **Backup your data first** - the target partition gets wiped
+- **Disable Secure Boot** in your BIOS/UEFI before installing Windows
+- After Windows installs, you might need to restore GRUB (the script tells you how)
 
-## Safety Measures
+## If something goes wrong
 
-1. Automatic backup of GRUB configuration
-2. Multiple user confirmations before destructive operations
-3. Comprehensive error checking
-4. Safe cleanup on script termination
-5. Detailed logging for troubleshooting
+Check `/var/log/lnxboot.log` for details. Most issues are:
 
-## Troubleshooting
-
-### Common Issues
-
-1. **GRUB Not Updated**
-   ```bash
-   sudo grub2-mkconfig -o /boot/grub2/grub.cfg   # For RHEL-based systems
-   sudo update-grub                              # For Debian-based systems
-   ```
-
-2. **Package Manager Errors**
-   ```bash
-   # Manual package installation
-   # Debian/Ubuntu
-   sudo apt install ntfs-3g grub-common
-   
-   # Fedora
-   sudo dnf install ntfs-3g grub2-tools
-   
-   # Arch Linux
-   sudo pacman -S ntfs-3g grub
-   
-   # openSUSE
-   sudo zypper install ntfs-3g grub2
-   
-   # Fedora Silverblue/Kinoite
-   sudo rpm-ostree install ntfs-3g grub2-tools
-   ```
-
-3. **Secure Boot Issues**
-   - Disable Secure Boot in BIOS/UEFI settings
-   - Enable CSM (Compatibility Support Module) if available
-
-## Logging
-
-- Log file location: `/var/log/lnxboot.log`
-- Contains detailed information about:
-  - Package installation attempts
-  - Partition operations
-  - GRUB configuration changes
-  - Error messages
-
-## Security Considerations
-
-- Script requires root privileges
-- Creates backups of critical system files
-- Verifies file integrity before operations
-- Sanitizes user inputs
-- Handles sensitive operations safely
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
+1. **Windows won't boot**: Try `sudo grub2-mkconfig -o /boot/grub2/grub.cfg`
+2. **Missing packages**: The script usually handles this, but you can install manually
+3. **UEFI issues**: Make sure Secure Boot is disabled
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+MIT License - use it however you want.
 
-## Disclaimer
+## Contributing
 
-This script modifies system boot configuration and partitions. While it includes safety measures, always backup important data before use. The authors are not responsible for data loss or system issues.
-
-## Author
-
-- Original Author: kleosr
-
-## Version History
-
-- 1.0.0: Initial release
-- 1.1.0: Added universal distribution support
-- 1.2.0: Enhanced UEFI support
-- 1.3.0: Added comprehensive logging
+Found a bug or want to improve something? Pull requests welcome.
