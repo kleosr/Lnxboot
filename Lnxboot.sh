@@ -6,8 +6,8 @@
 # Creates a bootable Windows installation environment from a Windows ISO
 # =========================================
 
-# Exit immediately if a command exits with a non-zero status
-set -e
+# Exit immediately on errors, unset variables, and failed pipes; propagate ERR trap
+set -Eeuo pipefail
 
 # Verify script is run with root privileges
 if [ "$EUID" -ne 0 ]; then 
@@ -91,51 +91,39 @@ find_efi_partition() {
 
 # Function to detect and configure GRUB
 configure_grub() {
-    local pkg_manager=$(detect_package_manager)
-    local grub_config_path
-    local grub_cmd
-    local grub_custom_path
-    
-    case $pkg_manager in
-        "rpm-ostree"|"dnf"|"yum")
-            grub_config_path="/boot/grub2/grub.cfg"
-            grub_custom_path="/etc/grub.d/40_custom"
-            grub_cmd="grub2-mkconfig"
-            ;;
-        "apt")
-            grub_config_path="/boot/grub/grub.cfg"
-            grub_custom_path="/etc/grub.d/40_custom"
-            if command -v update-grub >/dev/null 2>&1; then
-                grub_cmd="update-grub"
-            else
-                grub_cmd="grub-mkconfig"
-            fi
-            ;;
-        "pacman"|"zypper")
-            if [ -d "/boot/grub" ]; then
-                grub_config_path="/boot/grub/grub.cfg"
-            else
-                grub_config_path="/boot/grub2/grub.cfg"
-            fi
-            grub_custom_path="/etc/grub.d/40_custom"
-            if command -v grub-mkconfig >/dev/null 2>&1; then
-                grub_cmd="grub-mkconfig"
-            elif command -v grub2-mkconfig >/dev/null 2>&1; then
-                grub_cmd="grub2-mkconfig"
-            else
-                echo "[ERROR] No GRUB configuration command found."
-                exit 1
-            fi
-            ;;
-    esac
-    
+    local grub_config_path=""
+    local grub_cmd=""
+    local grub_custom_path="/etc/grub.d/40_custom"
+
+    # Determine config output path
+    if [ -d "/boot/grub" ]; then
+        grub_config_path="/boot/grub/grub.cfg"
+    elif [ -d "/boot/grub2" ]; then
+        grub_config_path="/boot/grub2/grub.cfg"
+    else
+        # Fallback: prefer /boot/grub
+        grub_config_path="/boot/grub/grub.cfg"
+    fi
+
+    # Determine the command to regenerate GRUB config
+    if command -v update-grub >/dev/null 2>&1; then
+        grub_cmd="update-grub"
+    elif command -v grub-mkconfig >/dev/null 2>&1; then
+        grub_cmd="grub-mkconfig"
+    elif command -v grub2-mkconfig >/dev/null 2>&1; then
+        grub_cmd="grub2-mkconfig"
+    else
+        echo "[ERROR] No GRUB configuration command found."
+        exit 1
+    fi
+
     echo "$grub_config_path:$grub_cmd:$grub_custom_path"
 }
 
 # Check for required tools
 check_requirements() {
-    # Check for ntfs-3g
-    if ! command -v mkfs.ntfs >/dev/null 2>&1; then
+    # Check for ntfs-3g formatter (mkfs.ntfs or mkntfs)
+    if ! command -v mkfs.ntfs >/dev/null 2>&1 && ! command -v mkntfs >/dev/null 2>&1; then
         echo "[INFO] Installing required packages..."
         install_packages
     fi
@@ -146,11 +134,7 @@ check_requirements() {
         install_packages
     fi
     
-    # Check for efibootmgr if UEFI
-    if [ "$(detect_boot_mode)" = "UEFI" ] && ! command -v efibootmgr >/dev/null 2>&1; then
-        echo "[INFO] Installing required packages..."
-        install_packages
-    fi
+    # efibootmgr is optional; not required for this flow
 }
 
 # Run requirements check
@@ -174,6 +158,19 @@ BOOT_MODE=$(detect_boot_mode)
 log() {
     echo "[$(date +"%Y-%m-%d %H:%M:%S")] $1" | tee -a "$LOG_FILE"
 }
+
+# Initialize logging file with secure permissions
+mkdir -p "$(dirname "$LOG_FILE")"
+umask 077
+touch "$LOG_FILE"
+
+# Error trap for better diagnostics
+on_error() {
+    local exit_code=$?
+    local line_no=${BASH_LINENO[0]:-0}
+    log "ERROR: Command failed with exit code $exit_code at line $line_no: $BASH_COMMAND"
+}
+trap on_error ERR
 
 # Function to clean up on exit
 cleanup() {
@@ -213,22 +210,32 @@ if ! lsblk "$TARGET_PARTITION" >/dev/null 2>&1; then
     exit 1
 fi
 
+# Disallow empty input
+if [ -z "${TARGET_PARTITION:-}" ]; then
+    echo "[ERROR] No partition specified."
+    exit 1
+fi
+
+# Ensure the selected target is a partition (not a whole disk)
+if [ "$(lsblk -no TYPE "$TARGET_PARTITION")" != "part" ]; then
+    echo "[ERROR] Target must be a partition (e.g., /dev/sda3), not a whole disk."
+    exit 1
+fi
+
+# Prevent selecting the EFI System Partition as target
+EFI_GUID="c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
+PART_TYPE=$(lsblk -no PARTTYPE "$TARGET_PARTITION" | tr '[:upper:]' '[:lower:]' || true)
+if [ "$PART_TYPE" = "$EFI_GUID" ]; then
+    echo "[ERROR] The selected partition appears to be the EFI System Partition. Choose a different partition."
+    exit 1
+fi
+
 # Get partition details
 PART_SIZE=$(lsblk -b -n -o SIZE "$TARGET_PARTITION" | head -n1)
+DISK_NAME=$(lsblk -no pkname "$TARGET_PARTITION")
+DISK_PATH="/dev/$DISK_NAME"
+PART_NUM=$(lsblk -no PARTNUM "$TARGET_PARTITION" | head -n1 || echo "")
 PART_NAME=$(basename "$TARGET_PARTITION")
-
-# Handle both SATA and NVMe drives for GRUB configuration
-if [[ "$PART_NAME" == nvme* ]]; then
-    # NVMe format: nvme0n1p1 -> Extract disk and partition number
-    DISK_NAME=$(echo "$PART_NAME" | sed -r 's/p[0-9]+$//')
-    PART_NUM=$(echo "$PART_NAME" | grep -o 'p[0-9]\+$' | grep -o '[0-9]\+')
-    DISK_PATH="/dev/$DISK_NAME"
-else
-    # SATA format: sda1 -> Extract disk and partition number
-    DISK_NAME=$(echo "$PART_NAME" | sed 's/[0-9]//g')
-    PART_NUM=$(echo "$PART_NAME" | sed 's/[^0-9]//g')
-    DISK_PATH="/dev/$DISK_NAME"
-fi
 
 echo "Target partition details:"
 echo "-------------------------------------"
@@ -236,10 +243,11 @@ lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT,LABEL,PARTTYPE -p "$TARGET_PARTITION"
 echo "Disk: $DISK_PATH, Partition: $PART_NUM"
 echo "-------------------------------------"
 
-# Check partition size (minimum 20GB for Windows)
-MIN_SIZE=$((20 * 1024 * 1024 * 1024))  # 20GB in bytes
+# Check partition size (minimum configurable, default 32GB for modern Windows)
+MIN_SIZE_GB=${MIN_SIZE_GB:-32}
+MIN_SIZE=$((MIN_SIZE_GB * 1024 * 1024 * 1024))
 if [ "$PART_SIZE" -lt "$MIN_SIZE" ]; then
-    echo "[ERROR] Partition too small. Windows requires at least 20GB."
+    echo "[ERROR] Partition too small. Windows typically requires at least ${MIN_SIZE_GB}GB."
     echo "Current size: $(( PART_SIZE / 1024 / 1024 / 1024 )) GB"
     exit 1
 fi
@@ -259,22 +267,55 @@ log "Creating mount points"
 rm -rf "$MOUNT_POINT" "$ISO_MOUNT" 2>/dev/null || true
 mkdir -p "$MOUNT_POINT" "$ISO_MOUNT"
 
+# Ensure target partition is not mounted (prevent formatting active mounts)
+CURRENT_MOUNTPOINT=$(lsblk -no MOUNTPOINT "$TARGET_PARTITION" | head -n1 || true)
+if [ -n "${CURRENT_MOUNTPOINT:-}" ]; then
+    echo "[ERROR] Target partition is currently mounted at $CURRENT_MOUNTPOINT. Please unmount it and try again."
+    exit 1
+fi
+
 # Format partition as NTFS
 log "Formatting $TARGET_PARTITION as NTFS"
 umount "$TARGET_PARTITION" 2>/dev/null || true
 echo "[INFO] Formatting partition..."
-mkfs.ntfs -f -L "Windows" "$TARGET_PARTITION" || {
-    echo "[ERROR] Failed to format partition as NTFS."
-    echo "Please install ntfs-3g package and try again."
-    exit 1
-}
+if command -v mkfs.ntfs >/dev/null 2>&1; then
+    mkfs.ntfs -f -L "Windows" "$TARGET_PARTITION" || {
+        echo "[ERROR] Failed to format partition as NTFS."
+        echo "Please install ntfs-3g package and try again."
+        exit 1
+    }
+else
+    mkntfs -f -L "Windows" "$TARGET_PARTITION" || {
+        echo "[ERROR] Failed to format partition as NTFS."
+        echo "Please install ntfs-3g package and try again."
+        exit 1
+    }
+fi
+sync
+sleep 1
 
 # Mount the Windows ISO
 log "Mounting Windows ISO"
-mount -o loop "$ISO_PATH" "$ISO_MOUNT" || {
+mount -o loop,ro "$ISO_PATH" "$ISO_MOUNT" || {
     echo "[ERROR] Failed to mount ISO. Please verify the ISO file is valid."
     exit 1
 }
+
+# Validate ISO looks like a Windows installer
+if [ ! -e "$ISO_MOUNT/sources/boot.wim" ] && [ ! -e "$ISO_MOUNT/sources/install.wim" ]; then
+    echo "[ERROR] The mounted ISO does not appear to be a Windows installation image (missing sources/boot.wim)."
+    exit 1
+fi
+
+# Ensure ISO contents will fit on the target partition (basic check)
+REQUIRED_BYTES=$(du -sb "$ISO_MOUNT" | awk '{print $1}')
+SAFETY_MARGIN=$((1024 * 1024 * 1024))
+if [ $((REQUIRED_BYTES + SAFETY_MARGIN)) -gt "$PART_SIZE" ]; then
+    echo "[ERROR] Target partition is too small for the contents of the Windows ISO."
+    echo "Required (approx): $(( (REQUIRED_BYTES + SAFETY_MARGIN) / 1024 / 1024 / 1024 )) GB"
+    echo "Available: $(( PART_SIZE / 1024 / 1024 / 1024 )) GB"
+    exit 1
+fi
 
 # Mount target partition
 log "Mounting target partition"
@@ -289,12 +330,12 @@ echo "Copying files from Windows ISO to the target partition..."
 
 # Use rsync for better progress and error handling
 if command -v rsync >/dev/null 2>&1; then
-    rsync -av --progress "$ISO_MOUNT"/ "$MOUNT_POINT"/ || {
+    rsync -a --info=progress2 "$ISO_MOUNT"/ "$MOUNT_POINT"/ || {
         echo "[ERROR] Failed to copy Windows files. Check available disk space."
         exit 1
     }
 else
-    cp -r "$ISO_MOUNT"/* "$MOUNT_POINT"/ || {
+    cp -a "$ISO_MOUNT"/. "$MOUNT_POINT"/ || {
         echo "[ERROR] Failed to copy Windows files. Check available disk space."
         exit 1
     }
@@ -312,49 +353,78 @@ umount "$MOUNT_POINT" || log "Warning: Could not unmount target partition"
 IFS=':' read -r GRUB_CFG_FILE GRUB_CMD GRUB_CUSTOM_FILE <<< "$(configure_grub)"
 
 # Get partition UUID for GRUB entry
-PART_UUID=$(blkid -s UUID -o value "$TARGET_PARTITION")
+PART_UUID=$(blkid -s UUID -o value "$TARGET_PARTITION" || true)
+if [ -z "${PART_UUID:-}" ]; then
+    echo "[ERROR] Failed to retrieve partition UUID for $TARGET_PARTITION."
+    exit 1
+fi
 
-# Create GRUB menu entry for Windows
+# Create GRUB menu entry for Windows (idempotent)
 log "Creating GRUB menu entry for Windows"
+mkdir -p "$(dirname "$GRUB_CUSTOM_FILE")"
 
-if [ "$BOOT_MODE" = "UEFI" ]; then
-    # UEFI boot entry
-    cat << EOF >> "$GRUB_CUSTOM_FILE"
+# Ensure 40_custom has the standard header if it doesn't exist
+if [ ! -f "$GRUB_CUSTOM_FILE" ]; then
+    cat > "$GRUB_CUSTOM_FILE" << 'EOF_GRUBCUST'
+#!/bin/sh
+exec tail -n +3 $0
+# Custom GRUB menu entries
+EOF_GRUBCUST
+    chmod +x "$GRUB_CUSTOM_FILE"
+fi
 
-# Windows Boot Entry - Added by Lnxboot
+if ! grep -q "$PART_UUID" "$GRUB_CUSTOM_FILE"; then
+    if [ "$BOOT_MODE" = "UEFI" ]; then
+        # UEFI boot entry: chainload Windows EFI loader from the NTFS partition via GRUB
+        cat << EOF >> "$GRUB_CUSTOM_FILE"
+
+# Windows Boot Entry - Added by Lnxboot (UEFI)
 menuentry "Windows Installation (UEFI)" {
     insmod part_gpt
     insmod part_msdos
     insmod ntfs
     insmod fat
     insmod chain
-    search --fs-uuid --set=root $PART_UUID
-    if [ -f /EFI/Microsoft/Boot/bootmgfw.efi ]; then
+    search --no-floppy --fs-uuid --set=root $PART_UUID
+    if [ -f /EFI/Boot/bootx64.efi ]; then
+        chainloader /EFI/Boot/bootx64.efi
+    elif [ -f /EFI/Microsoft/Boot/bootmgfw.efi ]; then
         chainloader /EFI/Microsoft/Boot/bootmgfw.efi
     elif [ -f /bootmgr.efi ]; then
         chainloader /bootmgr.efi
-    elif [ -f /EFI/Boot/bootx64.efi ]; then
-        chainloader /EFI/Boot/bootx64.efi
     else
         chainloader /bootmgr
     fi
 }
 EOF
-else
-    # Legacy BIOS boot entry
-    cat << EOF >> "$GRUB_CUSTOM_FILE"
+    else
+        # Legacy BIOS boot entry: prefer ntldr module to load bootmgr, fallback to chainloader +1
+        cat << EOF >> "$GRUB_CUSTOM_FILE"
 
-# Windows Boot Entry - Added by Lnxboot  
+# Windows Boot Entry - Added by Lnxboot (Legacy BIOS)
 menuentry "Windows Installation (Legacy)" {
     insmod part_msdos
     insmod part_gpt
     insmod ntfs
+    insmod ntldr
     insmod chain
-    search --fs-uuid --set=root $PART_UUID
-    drivemap -s (hd0) \${root}
-    chainloader +1
+    search --no-floppy --fs-uuid --set=root $PART_UUID
+    if [ -f /bootmgr ]; then
+        ntldr /bootmgr
+    else
+        chainloader +1
+    fi
 }
 EOF
+    fi
+else
+    log "GRUB custom entry already contains this partition UUID. Skipping entry creation."
+fi
+
+# Defensive check for GRUB variables
+if [ -z "${GRUB_CMD:-}" ] || [ -z "${GRUB_CFG_FILE:-}" ] || [ -z "${GRUB_CUSTOM_FILE:-}" ]; then
+    echo "[ERROR] Unable to determine GRUB configuration command or paths."
+    exit 1
 fi
 
 # Update GRUB configuration
@@ -380,15 +450,6 @@ case "$GRUB_CMD" in
         ;;
 esac
 
-# For UEFI systems, also try to add Windows to EFI boot manager
-if [ "$BOOT_MODE" = "UEFI" ] && command -v efibootmgr >/dev/null 2>&1; then
-    log "Adding Windows to EFI boot manager"
-    EFI_PART=$(find_efi_partition)
-    if [ -n "$EFI_PART" ]; then
-        # Try to add Windows boot entry
-        efibootmgr -c -d "$DISK_PATH" -p "$PART_NUM" -L "Windows Boot Manager" -l "\\EFI\\Microsoft\\Boot\\bootmgfw.efi" 2>/dev/null || true
-    fi
-fi
 
 # Display completion information
 echo
@@ -415,7 +476,13 @@ echo
 # Final notes
 echo "Important Notes:"
 echo "- Ensure Secure Boot is disabled in BIOS/UEFI settings before installation"
-echo "- If Windows doesn't boot, try running: sudo $GRUB_CMD -o $GRUB_CFG_FILE"
+if [ "$GRUB_CMD" = "update-grub" ]; then
+    echo "- If Windows doesn't boot, try running: sudo update-grub"
+elif [ "$GRUB_CMD" = "grub-mkconfig" ]; then
+    echo "- If Windows doesn't boot, try running: sudo grub-mkconfig -o $GRUB_CFG_FILE"
+elif [ "$GRUB_CMD" = "grub2-mkconfig" ]; then
+    echo "- If Windows doesn't boot, try running: sudo grub2-mkconfig -o $GRUB_CFG_FILE"
+fi
 echo "- For UEFI systems, Windows should appear in your firmware boot menu"
 echo "- After Windows installation, you may need to restore GRUB bootloader"
 echo "- A log file of this installation is available at $LOG_FILE"
