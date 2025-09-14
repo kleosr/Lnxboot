@@ -16,6 +16,100 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
+# Usage helper
+print_usage() {
+    cat << 'EOF_USAGE'
+Usage: lnxboot [options]
+
+Required (choose one):
+  --iso PATH               Path to Windows ISO file
+  or positional ISO path   Backward-compatible: lnxboot /path/to/windows.iso
+
+Optional:
+  --target DEV             Target partition (e.g., /dev/sda3)
+  --yes                    Non-interactive; auto-confirm destructive actions
+  --dry-run                Validate and prepare, but do not modify disks/GRUB
+  --log-file PATH          Log file path (default: /var/log/lnxboot.log)
+  --min-size-gb N          Minimum target size in GB (default: 32)
+  --copy-timeout-sec N     Timeout in seconds for file copy (default: 0 = none)
+  -h, --help               Show this help
+EOF_USAGE
+}
+
+# Defaults for CLI
+ISO_PATH=""
+TARGET_PARTITION=""
+AUTO_YES=0
+DRY_RUN=0
+MIN_SIZE_GB=${MIN_SIZE_GB:-32}
+COPY_TIMEOUT_SEC=${COPY_TIMEOUT_SEC:-0}
+# LOG_FILE will be finalized later; allow override via CLI first
+LOG_FILE_CLI=""
+
+# Exit codes for specific failure modes
+EXIT_ENC_LUKS=70
+EXIT_ENC_BITLOCKER=71
+EXIT_ENC_MANAGED=72
+
+# Parse CLI flags (supports positional ISO for backward-compat)
+if [ "$#" -gt 0 ]; then
+    while [ "$#" -gt 0 ]; do
+        case "${1:-}" in
+            --iso)
+                ISO_PATH="${2:-}"
+                shift 2
+                ;;
+            --target)
+                TARGET_PARTITION="${2:-}"
+                shift 2
+                ;;
+            --yes)
+                AUTO_YES=1
+                shift 1
+                ;;
+            --dry-run)
+                DRY_RUN=1
+                shift 1
+                ;;
+            --log-file)
+                LOG_FILE_CLI="${2:-}"
+                shift 2
+                ;;
+            --min-size-gb)
+                MIN_SIZE_GB="${2:-}"
+                shift 2
+                ;;
+            --copy-timeout-sec)
+                COPY_TIMEOUT_SEC="${2:-}"
+                shift 2
+                ;;
+            -h|--help)
+                print_usage
+                exit 0
+                ;;
+            --)
+                shift; break
+                ;;
+            -*)
+                echo "[ERROR] Unknown option: $1"
+                print_usage
+                exit 1
+                ;;
+            *)
+                # Positional ISO path (backward compatibility)
+                if [ -z "${ISO_PATH}" ]; then
+                    ISO_PATH="$1"
+                else
+                    echo "[ERROR] Unexpected positional argument: $1"
+                    print_usage
+                    exit 1
+                fi
+                shift 1
+                ;;
+        esac
+    done
+fi
+
 # Function to detect package manager and install packages
 detect_package_manager() {
     if command -v rpm-ostree >/dev/null 2>&1; then
@@ -120,6 +214,65 @@ configure_grub() {
     echo "$grub_config_path:$grub_cmd:$grub_custom_path"
 }
 
+# Encryption and managed-volume detection guard
+encryption_scan_device() {
+    local device="$1"
+    if [ -z "${device:-}" ] || [ ! -b "$device" ]; then
+        # Nothing to scan
+        return 0
+    fi
+
+    local children found_code fstype btype ltype findings
+    found_code=0
+    findings=""
+
+    # Enumerate partitions on the disk; if none, scan the disk itself
+    children=$(lsblk -ln -o NAME,TYPE "$device" 2>/dev/null | awk '$2=="part"{print "/dev/"$1}')
+    if [ -z "${children:-}" ]; then
+        children="$device"
+    fi
+
+    for p in $children; do
+        fstype=$(lsblk -no FSTYPE "$p" 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)
+        btype=$(blkid -s TYPE -o value "$p" 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)
+        ltype=$(lsblk -no TYPE "$p" 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)
+
+        # LUKS detection (safe, read-only)
+        if command -v cryptsetup >/dev/null 2>&1; then
+            if cryptsetup isLuks "$p" >/dev/null 2>&1; then
+                findings="${findings}\n - LUKS container detected on $p"
+                found_code=$EXIT_ENC_LUKS
+                continue
+            fi
+        fi
+
+        # BitLocker detection via blkid metadata
+        if echo "${btype:-}" | grep -qi 'bitlocker'; then
+            findings="${findings}\n - BitLocker signature detected on $p"
+            if [ $found_code -eq 0 ]; then found_code=$EXIT_ENC_BITLOCKER; fi
+        elif blkid -p -o export "$p" 2>/dev/null | grep -qi 'bitlocker'; then
+            findings="${findings}\n - BitLocker metadata detected on $p"
+            if [ $found_code -eq 0 ]; then found_code=$EXIT_ENC_BITLOCKER; fi
+        fi
+
+        # Managed volume types
+        if [ "${fstype:-}" = "lvm2_member" ] || [ "${fstype:-}" = "linux_raid_member" ] || [ "${fstype:-}" = "crypto_luks" ] || [ "${ltype:-}" = "crypt" ]; then
+            findings="${findings}\n - Managed volume detected (${fstype:-$ltype}) on $p"
+            if [ $found_code -eq 0 ]; then found_code=$EXIT_ENC_MANAGED; fi
+        fi
+    done
+
+    if [ -n "${findings}" ]; then
+        echo "[ERROR] Encrypted or managed target drive detected: $device" >&2
+        printf "%b\n" "$findings" >&2
+        echo "Operation may need to abort to avoid data loss. No writes were performed." >&2
+        log "ERROR: Encryption/managed volume detected on $device. Cancelling before any write."
+        return ${found_code:-$EXIT_ENC_MANAGED}
+    fi
+
+    return 0
+}
+
 # Check for required tools
 check_requirements() {
     # Check for ntfs-3g formatter (mkfs.ntfs or mkntfs)
@@ -140,18 +293,21 @@ check_requirements() {
 # Run requirements check
 check_requirements
 
-# Check for ISO path argument
-if [ -z "$1" ]; then
+# Validate ISO path presence
+if [ -z "${ISO_PATH:-}" ]; then
     echo "[ERROR] No Windows ISO path provided."
-    echo "Usage: $0 /path/to/windows.iso"
-    echo "Please provide a valid Windows ISO file path."
+    echo "Provide with --iso /path/to/windows.iso or positional path."
     exit 1
 fi
 
-ISO_PATH="$1"
 MOUNT_POINT="/mnt/windows_target"
 ISO_MOUNT="/mnt/iso_temp"
-LOG_FILE="/var/log/lnxboot.log"
+# Finalize log file path (CLI override if provided)
+if [ -n "${LOG_FILE_CLI:-}" ]; then
+    LOG_FILE="$LOG_FILE_CLI"
+else
+    LOG_FILE="/var/log/lnxboot.log"
+fi
 BOOT_MODE=$(detect_boot_mode)
 
 # Function for logging
@@ -188,7 +344,7 @@ log "Starting Windows dual-boot setup (Boot mode: $BOOT_MODE)"
 
 # Verify ISO exists
 if [ ! -f "$ISO_PATH" ]; then
-    echo "[ERROR] Windows ISO not found: $ISO_PATH"
+    log "ERROR: Windows ISO not found: $ISO_PATH"
     exit 1
 fi
 
@@ -198,27 +354,29 @@ echo "-------------------------------------"
 lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT,LABEL,PARTTYPE -p
 echo "-------------------------------------"
 
-# Get target partition from user
-echo "Select a partition for Windows installation (e.g., /dev/sda3 or /dev/nvme0n1p3)"
-echo "[WARNING] All data on the selected partition will be erased."
-read -p "Enter partition path: " TARGET_PARTITION
+# Get target partition from user if not provided
+if [ -z "${TARGET_PARTITION:-}" ]; then
+    echo "Select a partition for Windows installation (e.g., /dev/sda3 or /dev/nvme0n1p3)"
+    echo "[WARNING] All data on the selected partition will be erased."
+    read -p "Enter partition path: " TARGET_PARTITION
+fi
 
 # Validate partition exists
 if ! lsblk "$TARGET_PARTITION" >/dev/null 2>&1; then
-    echo "[ERROR] Invalid partition: $TARGET_PARTITION"
+    log "ERROR: Invalid partition: $TARGET_PARTITION"
     echo "Please verify the partition path and try again."
     exit 1
 fi
 
 # Disallow empty input
 if [ -z "${TARGET_PARTITION:-}" ]; then
-    echo "[ERROR] No partition specified."
+    log "ERROR: No partition specified."
     exit 1
 fi
 
 # Ensure the selected target is a partition (not a whole disk)
 if [ "$(lsblk -no TYPE "$TARGET_PARTITION")" != "part" ]; then
-    echo "[ERROR] Target must be a partition (e.g., /dev/sda3), not a whole disk."
+    log "ERROR: Target must be a partition (e.g., /dev/sda3), not a whole disk."
     exit 1
 fi
 
@@ -226,7 +384,39 @@ fi
 EFI_GUID="c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
 PART_TYPE=$(lsblk -no PARTTYPE "$TARGET_PARTITION" | tr '[:upper:]' '[:lower:]' || true)
 if [ "$PART_TYPE" = "$EFI_GUID" ]; then
-    echo "[ERROR] The selected partition appears to be the EFI System Partition. Choose a different partition."
+    log "ERROR: The selected partition appears to be the EFI System Partition."
+    echo "Choose a different partition."
+    exit 1
+fi
+
+# Additional partition safety checks
+TARGET_FSTYPE=$(lsblk -no FSTYPE "$TARGET_PARTITION" | tr '[:upper:]' '[:lower:]' || true)
+TARGET_MOUNTPOINT=$(lsblk -no MOUNTPOINT "$TARGET_PARTITION" | head -n1 || true)
+if [[ "${TARGET_FSTYPE}" =~ ^(crypto_luks|lvm2_member|linux_raid_member)$ ]]; then
+    log "ERROR: Target partition is a managed volume (${TARGET_FSTYPE})."
+    echo "Choose a plain partition."
+    exit 1
+fi
+# Deny any FAT/VFAT partition mounted as ESP
+if [ -n "${TARGET_MOUNTPOINT:-}" ] && [[ "${TARGET_MOUNTPOINT}" =~ ^(/boot/efi|/efi)$ ]]; then
+    log "ERROR: The selected partition is mounted as the EFI System Partition (${TARGET_MOUNTPOINT})."
+    exit 1
+fi
+
+# Ensure not the device hosting /, /boot, or /boot/efi
+ROOT_SRC=$(findmnt -no SOURCE / || true)
+BOOT_SRC=$(findmnt -no SOURCE /boot 2>/dev/null || true)
+ESP_SRC=$(findmnt -no SOURCE /boot/efi 2>/dev/null || true)
+if [ -n "${ROOT_SRC:-}" ] && [ "$TARGET_PARTITION" = "$ROOT_SRC" ]; then
+    log "ERROR: Target partition is the current root filesystem device."
+    exit 1
+fi
+if [ -n "${BOOT_SRC:-}" ] && [ "$TARGET_PARTITION" = "$BOOT_SRC" ]; then
+    log "ERROR: Target partition is the current /boot device."
+    exit 1
+fi
+if [ -n "${ESP_SRC:-}" ] && [ "$TARGET_PARTITION" = "$ESP_SRC" ]; then
+    log "ERROR: Target partition is the current EFI System Partition."
     exit 1
 fi
 
@@ -243,21 +433,36 @@ lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT,LABEL,PARTTYPE -p "$TARGET_PARTITION"
 echo "Disk: $DISK_PATH, Partition: $PART_NUM"
 echo "-------------------------------------"
 
-# Check partition size (minimum configurable, default 32GB for modern Windows)
-MIN_SIZE_GB=${MIN_SIZE_GB:-32}
+# Encryption detection on parent disk and selected partition (read-only)
+if ! encryption_scan_device "$DISK_PATH"; then
+    exit $?
+fi
+if ! encryption_scan_device "$TARGET_PARTITION"; then
+    exit $?
+fi
+
+# Check partition size (minimum configurable)
 MIN_SIZE=$((MIN_SIZE_GB * 1024 * 1024 * 1024))
 if [ "$PART_SIZE" -lt "$MIN_SIZE" ]; then
-    echo "[ERROR] Partition too small. Windows typically requires at least ${MIN_SIZE_GB}GB."
+    log "ERROR: Partition too small. Windows typically requires at least ${MIN_SIZE_GB}GB."
     echo "Current size: $(( PART_SIZE / 1024 / 1024 / 1024 )) GB"
     exit 1
 fi
 
 # Confirm with user before proceeding
-echo "[WARNING] This will erase all data on $TARGET_PARTITION"
-read -p "Do you want to continue? (y/N): " confirm
-if [[ ! "$confirm" =~ ^[yY]$ ]]; then
-    echo "Operation cancelled."
-    exit 0
+if [ "$DRY_RUN" -eq 1 ]; then
+    echo "[DRY-RUN] Skipping confirmation; no changes will be made."
+else
+    if [ "$AUTO_YES" -ne 1 ]; then
+        echo "[WARNING] This will erase all data on $TARGET_PARTITION"
+        read -p "Do you want to continue? (y/N): " confirm
+        if [[ ! "$confirm" =~ ^[yY]$ ]]; then
+            echo "Operation cancelled."
+            exit 0
+        fi
+    else
+        echo "[INFO] Auto-confirm enabled via --yes"
+    fi
 fi
 
 log "Preparing to install Windows from $ISO_PATH to $TARGET_PARTITION"
@@ -270,8 +475,20 @@ mkdir -p "$MOUNT_POINT" "$ISO_MOUNT"
 # Ensure target partition is not mounted (prevent formatting active mounts)
 CURRENT_MOUNTPOINT=$(lsblk -no MOUNTPOINT "$TARGET_PARTITION" | head -n1 || true)
 if [ -n "${CURRENT_MOUNTPOINT:-}" ]; then
-    echo "[ERROR] Target partition is currently mounted at $CURRENT_MOUNTPOINT. Please unmount it and try again."
+    log "ERROR: Target partition is currently mounted at $CURRENT_MOUNTPOINT."
+    echo "Please unmount it and try again."
     exit 1
+fi
+
+# Respect dry-run (exit before making changes)
+if [ "$DRY_RUN" -eq 1 ]; then
+    echo "[DRY-RUN] Validation complete. No changes made."
+    echo "- ISO: $ISO_PATH"
+    echo "- Target: $TARGET_PARTITION"
+    echo "- Boot Mode: $BOOT_MODE"
+    echo "- Min size (GB): $MIN_SIZE_GB"
+    echo "- Log file: ${LOG_FILE}"
+    exit 0
 fi
 
 # Format partition as NTFS
@@ -280,13 +497,13 @@ umount "$TARGET_PARTITION" 2>/dev/null || true
 echo "[INFO] Formatting partition..."
 if command -v mkfs.ntfs >/dev/null 2>&1; then
     mkfs.ntfs -f -L "Windows" "$TARGET_PARTITION" || {
-        echo "[ERROR] Failed to format partition as NTFS."
+        log "ERROR: Failed to format partition as NTFS."
         echo "Please install ntfs-3g package and try again."
         exit 1
     }
 else
     mkntfs -f -L "Windows" "$TARGET_PARTITION" || {
-        echo "[ERROR] Failed to format partition as NTFS."
+        log "ERROR: Failed to format partition as NTFS."
         echo "Please install ntfs-3g package and try again."
         exit 1
     }
@@ -297,13 +514,13 @@ sleep 1
 # Mount the Windows ISO
 log "Mounting Windows ISO"
 mount -o loop,ro "$ISO_PATH" "$ISO_MOUNT" || {
-    echo "[ERROR] Failed to mount ISO. Please verify the ISO file is valid."
+    log "ERROR: Failed to mount ISO. Please verify the ISO file is valid."
     exit 1
 }
 
 # Validate ISO looks like a Windows installer
 if [ ! -e "$ISO_MOUNT/sources/boot.wim" ] && [ ! -e "$ISO_MOUNT/sources/install.wim" ]; then
-    echo "[ERROR] The mounted ISO does not appear to be a Windows installation image (missing sources/boot.wim)."
+    log "ERROR: The mounted ISO does not appear to be a Windows installation image (missing sources/boot.wim)."
     exit 1
 fi
 
@@ -311,7 +528,7 @@ fi
 REQUIRED_BYTES=$(du -sb "$ISO_MOUNT" | awk '{print $1}')
 SAFETY_MARGIN=$((1024 * 1024 * 1024))
 if [ $((REQUIRED_BYTES + SAFETY_MARGIN)) -gt "$PART_SIZE" ]; then
-    echo "[ERROR] Target partition is too small for the contents of the Windows ISO."
+    log "ERROR: Target partition is too small for the contents of the Windows ISO."
     echo "Required (approx): $(( (REQUIRED_BYTES + SAFETY_MARGIN) / 1024 / 1024 / 1024 )) GB"
     echo "Available: $(( PART_SIZE / 1024 / 1024 / 1024 )) GB"
     exit 1
@@ -320,7 +537,7 @@ fi
 # Mount target partition
 log "Mounting target partition"
 mount "$TARGET_PARTITION" "$MOUNT_POINT" || {
-    echo "[ERROR] Failed to mount the target partition."
+    log "ERROR: Failed to mount the target partition."
     exit 1
 }
 
@@ -328,17 +545,31 @@ mount "$TARGET_PARTITION" "$MOUNT_POINT" || {
 log "Copying Windows installation files (this may take several minutes)"
 echo "Copying files from Windows ISO to the target partition..."
 
-# Use rsync for better progress and error handling
+# Use rsync for better progress and error handling, with fallbacks and optional timeout
+run_copy_cmd() {
+    if [ "$COPY_TIMEOUT_SEC" -gt 0 ] && command -v timeout >/dev/null 2>&1; then
+        timeout "$COPY_TIMEOUT_SEC" "$@"
+    else
+        "$@"
+    fi
+}
+
 if command -v rsync >/dev/null 2>&1; then
-    rsync -a --info=progress2 "$ISO_MOUNT"/ "$MOUNT_POINT"/ || {
-        echo "[ERROR] Failed to copy Windows files. Check available disk space."
-        exit 1
-    }
+    if ! run_copy_cmd rsync -a --info=progress2 "$ISO_MOUNT"/ "$MOUNT_POINT"/; then
+        echo "[WARN] rsync with --info=progress2 failed; retrying with rsync -a"
+        if ! run_copy_cmd rsync -a "$ISO_MOUNT"/ "$MOUNT_POINT"/; then
+            echo "[WARN] rsync failed; falling back to cp -a"
+            if ! run_copy_cmd cp -a "$ISO_MOUNT"/. "$MOUNT_POINT"/; then
+                log "ERROR: Failed to copy Windows files. Check available disk space."
+                exit 1
+            fi
+        fi
+    fi
 else
-    cp -a "$ISO_MOUNT"/. "$MOUNT_POINT"/ || {
-        echo "[ERROR] Failed to copy Windows files. Check available disk space."
+    if ! run_copy_cmd cp -a "$ISO_MOUNT"/. "$MOUNT_POINT"/; then
+        log "ERROR: Failed to copy Windows files. Check available disk space."
         exit 1
-    }
+    fi
 fi
 
 # Ensure proper sync of filesystem
@@ -355,7 +586,7 @@ IFS=':' read -r GRUB_CFG_FILE GRUB_CMD GRUB_CUSTOM_FILE <<< "$(configure_grub)"
 # Get partition UUID for GRUB entry
 PART_UUID=$(blkid -s UUID -o value "$TARGET_PARTITION" || true)
 if [ -z "${PART_UUID:-}" ]; then
-    echo "[ERROR] Failed to retrieve partition UUID for $TARGET_PARTITION."
+    log "ERROR: Failed to retrieve partition UUID for $TARGET_PARTITION."
     exit 1
 fi
 
@@ -388,6 +619,8 @@ menuentry "Windows Installation (UEFI)" {
     search --no-floppy --fs-uuid --set=root $PART_UUID
     if [ -f /EFI/Boot/bootx64.efi ]; then
         chainloader /EFI/Boot/bootx64.efi
+    elif [ -f /EFI/Boot/bootaa64.efi ]; then
+        chainloader /EFI/Boot/bootaa64.efi
     elif [ -f /EFI/Microsoft/Boot/bootmgfw.efi ]; then
         chainloader /EFI/Microsoft/Boot/bootmgfw.efi
     elif [ -f /bootmgr.efi ]; then
@@ -398,7 +631,7 @@ menuentry "Windows Installation (UEFI)" {
 }
 EOF
     else
-        # Legacy BIOS boot entry: prefer ntldr module to load bootmgr, fallback to chainloader +1
+        # Legacy BIOS boot entry: load bootmgr; do not use +1 on fresh NTFS
         cat << EOF >> "$GRUB_CUSTOM_FILE"
 
 # Windows Boot Entry - Added by Lnxboot (Legacy BIOS)
@@ -406,13 +639,19 @@ menuentry "Windows Installation (Legacy)" {
     insmod part_msdos
     insmod part_gpt
     insmod ntfs
-    insmod ntldr
     insmod chain
     search --no-floppy --fs-uuid --set=root $PART_UUID
     if [ -f /bootmgr ]; then
-        ntldr /bootmgr
+        chainloader /bootmgr || true
+        # Some GRUB builds still ship ntldr; try it if chainloader fails
+        if [ $? -ne 0 ]; then
+            insmod ntldr
+            ntldr /bootmgr
+        fi
     else
-        chainloader +1
+        echo "bootmgr not found"
+        sleep 3
+        return
     fi
 }
 EOF
@@ -423,7 +662,7 @@ fi
 
 # Defensive check for GRUB variables
 if [ -z "${GRUB_CMD:-}" ] || [ -z "${GRUB_CFG_FILE:-}" ] || [ -z "${GRUB_CUSTOM_FILE:-}" ]; then
-    echo "[ERROR] Unable to determine GRUB configuration command or paths."
+    log "ERROR: Unable to determine GRUB configuration command or paths."
     exit 1
 fi
 
@@ -432,19 +671,19 @@ log "Updating GRUB configuration"
 case "$GRUB_CMD" in
     "update-grub")
         update-grub || {
-            echo "[ERROR] Failed to update GRUB configuration."
+            log "ERROR: Failed to update GRUB configuration."
             exit 1
         }
         ;;
     "grub-mkconfig")
         grub-mkconfig -o "$GRUB_CFG_FILE" || {
-            echo "[ERROR] Failed to update GRUB configuration."
+            log "ERROR: Failed to update GRUB configuration."
             exit 1
         }
         ;;
     "grub2-mkconfig")
         grub2-mkconfig -o "$GRUB_CFG_FILE" || {
-            echo "[ERROR] Failed to update GRUB configuration."
+            log "ERROR: Failed to update GRUB configuration."
             exit 1
         }
         ;;
