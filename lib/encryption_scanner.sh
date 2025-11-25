@@ -24,6 +24,91 @@ validate_device_for_scanning() {
     return 0
 }
 
+check_luks_encryption() {
+    local partition="$1"
+    
+    if command -v cryptsetup >/dev/null 2>&1; then
+        if cryptsetup isLuks "$partition" >/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+check_bitlocker_encryption() {
+    local partition="$1"
+    local btype="$2"
+    
+    if [ -n "${btype:-}" ] && echo "$btype" | grep -qi 'bitlocker'; then
+        return 0
+    elif blkid -p -o export "$partition" 2>/dev/null | grep -qi 'bitlocker'; then
+        return 0
+    fi
+    return 1
+}
+
+check_managed_volume_type() {
+    local fstype="$1"
+    local ltype="$2"
+    
+    if [ -n "${fstype:-}" ]; then
+        if [ "$fstype" = "lvm2_member" ] || [ "$fstype" = "linux_raid_member" ] || [ "$fstype" = "crypto_luks" ]; then
+            echo "$fstype"
+            return 0
+        fi
+    fi
+    
+    if [ -n "${ltype:-}" ] && [ "$ltype" = "crypt" ]; then
+        echo "$ltype"
+        return 0
+    fi
+    
+    return 1
+}
+
+scan_partition_for_encryption() {
+    local partition="$1"
+    local found_code_ref="$2"
+    local findings_ref="$3"
+    
+    if [ ! -e "$partition" ]; then
+        log_debug "Skipping non-existent partition: $partition"
+        return 1
+    fi
+    
+    local fstype=$(lsblk -no FSTYPE "$partition" 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo "")
+    local btype=$(blkid -s TYPE -o value "$partition" 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo "")
+    local ltype=$(lsblk -no TYPE "$partition" 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo "")
+    
+    if check_luks_encryption "$partition"; then
+        eval "$findings_ref=\"\${$findings_ref}\n - LUKS container detected on $partition\""
+        eval "$found_code_ref=$EXIT_ENC_LUKS"
+        log_error "LUKS encryption detected on: $partition"
+        return 0
+    fi
+    
+    if check_bitlocker_encryption "$partition" "$btype"; then
+        eval "$findings_ref=\"\${$findings_ref}\n - BitLocker signature detected on $partition (blkid TYPE: $btype)\""
+        if eval "[ \$$found_code_ref -eq 0 ]"; then
+            eval "$found_code_ref=$EXIT_ENC_BITLOCKER"
+        fi
+        log_error "BitLocker encryption detected on: $partition"
+        return 0
+    fi
+    
+    local managed_type=$(check_managed_volume_type "$fstype" "$ltype")
+    if [ $? -eq 0 ]; then
+        eval "$findings_ref=\"\${$findings_ref}\n - Managed volume detected (filesystem type: ${managed_type}) on $partition\""
+        if eval "[ \$$found_code_ref -eq 0 ]"; then
+            eval "$found_code_ref=$EXIT_ENC_MANAGED"
+        fi
+        log_error "Managed volume detected on: $partition (type: $managed_type)"
+        return 0
+    fi
+    
+    return 1
+}
+
 encryption_scan_device() {
     local device="$1"
     
@@ -31,71 +116,17 @@ encryption_scan_device() {
         return 0
     fi
 
-    local children found_code fstype btype ltype findings
-    found_code=0
-    findings=""
-
+    local found_code=0
+    local findings=""
     log_debug "Scanning device for encryption: $device"
 
-    children=$(lsblk -ln -o NAME,TYPE "$device" 2>/dev/null | awk '$2=="part"{print "/dev/"$1}')
+    local children=$(lsblk -ln -o NAME,TYPE "$device" 2>/dev/null | awk '$2=="part"{print "/dev/"$1}')
     if [ -z "${children:-}" ]; then
         children="$device"
     fi
 
-    for p in $children; do
-        if [ ! -e "$p" ]; then
-            log_debug "Skipping non-existent partition: $p"
-            continue
-        fi
-        
-        fstype=$(lsblk -no FSTYPE "$p" 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo "")
-        btype=$(blkid -s TYPE -o value "$p" 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo "")
-        ltype=$(lsblk -no TYPE "$p" 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo "")
-
-        if command -v cryptsetup >/dev/null 2>&1; then
-            if cryptsetup isLuks "$p" >/dev/null 2>&1; then
-                findings="${findings}\n - LUKS container detected on $p"
-                if [ $found_code -eq 0 ]; then
-                    found_code=$EXIT_ENC_LUKS
-                fi
-                log_error "LUKS encryption detected on: $p"
-                continue
-            fi
-        else
-            log_debug "cryptsetup not available, skipping LUKS detection"
-        fi
-
-        if [ -n "${btype:-}" ] && echo "$btype" | grep -qi 'bitlocker'; then
-            findings="${findings}\n - BitLocker signature detected on $p (blkid TYPE: $btype)"
-            if [ $found_code -eq 0 ]; then
-                found_code=$EXIT_ENC_BITLOCKER
-            fi
-            log_error "BitLocker encryption detected on: $p"
-        elif blkid -p -o export "$p" 2>/dev/null | grep -qi 'bitlocker'; then
-            findings="${findings}\n - BitLocker metadata detected on $p"
-            if [ $found_code -eq 0 ]; then
-                found_code=$EXIT_ENC_BITLOCKER
-            fi
-            log_error "BitLocker encryption detected on: $p"
-        fi
-
-        if [ -n "${fstype:-}" ]; then
-            if [ "$fstype" = "lvm2_member" ] || [ "$fstype" = "linux_raid_member" ] || [ "$fstype" = "crypto_luks" ]; then
-                findings="${findings}\n - Managed volume detected (filesystem type: ${fstype}) on $p"
-                if [ $found_code -eq 0 ]; then
-                    found_code=$EXIT_ENC_MANAGED
-                fi
-                log_error "Managed volume detected on: $p (type: $fstype)"
-            fi
-        fi
-        
-        if [ -n "${ltype:-}" ] && [ "$ltype" = "crypt" ]; then
-            findings="${findings}\n - Encrypted device detected (device type: ${ltype}) on $p"
-            if [ $found_code -eq 0 ]; then
-                found_code=$EXIT_ENC_MANAGED
-            fi
-            log_error "Encrypted device detected on: $p (type: $ltype)"
-        fi
+    for partition in $children; do
+        scan_partition_for_encryption "$partition" "found_code" "findings"
     done
 
     if [ -n "${findings}" ]; then

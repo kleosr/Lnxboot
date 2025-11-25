@@ -29,7 +29,7 @@ format_partition_ntfs() {
     fi
     
     sync
-    sleep 1
+    sleep ${FILESYSTEM_SYNC_SLEEP_SEC}
     
     if ! blkid "$partition" >/dev/null 2>&1; then
         log_warn "Cannot verify partition format immediately after formatting"
@@ -218,10 +218,9 @@ run_copy_cmd() {
     fi
 }
 
-copy_windows_files() {
+validate_copy_prerequisites() {
     local iso_mount="$1"
     local target_mount="$2"
-    local timeout_sec="$3"
     
     if [ -z "$iso_mount" ] || [ -z "$target_mount" ]; then
         log_error "ISO mount or target mount is empty"
@@ -238,6 +237,44 @@ copy_windows_files() {
         return 1
     fi
     
+    return 0
+}
+
+copy_with_rsync() {
+    local iso_mount="$1"
+    local target_mount="$2"
+    local timeout_sec="$3"
+    
+    if ! run_copy_cmd "$timeout_sec" rsync -a --info=progress2 "$iso_mount"/ "$target_mount"/ 2>&1 | tee -a "$LOG_FILE"; then
+        log_warn "rsync with --info=progress2 failed; retrying with rsync -a"
+        if ! run_copy_cmd "$timeout_sec" rsync -a "$iso_mount"/ "$target_mount"/ 2>&1 | tee -a "$LOG_FILE"; then
+            return 1
+        fi
+    fi
+    return 0
+}
+
+copy_with_cp() {
+    local iso_mount="$1"
+    local target_mount="$2"
+    local timeout_sec="$3"
+    
+    if ! run_copy_cmd "$timeout_sec" cp -a "$iso_mount"/. "$target_mount"/ 2>&1 | tee -a "$LOG_FILE"; then
+        log_error "cp command failed"
+        return 1
+    fi
+    return 0
+}
+
+copy_windows_files() {
+    local iso_mount="$1"
+    local target_mount="$2"
+    local timeout_sec="$3"
+    
+    if ! validate_copy_prerequisites "$iso_mount" "$target_mount"; then
+        return 1
+    fi
+    
     local required_bytes=$(du -sb "$iso_mount" 2>/dev/null | awk '{print $1}')
     if [ -n "$required_bytes" ] && [ "$required_bytes" -gt 0 ]; then
         if ! validate_available_space "$target_mount" "$required_bytes"; then
@@ -246,19 +283,15 @@ copy_windows_files() {
     fi
     
     if command -v rsync >/dev/null 2>&1; then
-        if ! run_copy_cmd "$timeout_sec" rsync -a --info=progress2 "$iso_mount"/ "$target_mount"/ 2>&1 | tee -a "$LOG_FILE"; then
-            log_warn "rsync with --info=progress2 failed; retrying with rsync -a"
-            if ! run_copy_cmd "$timeout_sec" rsync -a "$iso_mount"/ "$target_mount"/ 2>&1 | tee -a "$LOG_FILE"; then
-                log_warn "rsync failed; falling back to cp -a"
-                if ! run_copy_cmd "$timeout_sec" cp -a "$iso_mount"/. "$target_mount"/ 2>&1 | tee -a "$LOG_FILE"; then
-                    log_error "All copy methods failed"
-                    return 1
-                fi
+        if ! copy_with_rsync "$iso_mount" "$target_mount" "$timeout_sec"; then
+            log_warn "rsync failed; falling back to cp -a"
+            if ! copy_with_cp "$iso_mount" "$target_mount" "$timeout_sec"; then
+                log_error "All copy methods failed"
+                return 1
             fi
         fi
     else
-        if ! run_copy_cmd "$timeout_sec" cp -a "$iso_mount"/. "$target_mount"/ 2>&1 | tee -a "$LOG_FILE"; then
-            log_error "cp command failed"
+        if ! copy_with_cp "$iso_mount" "$target_mount" "$timeout_sec"; then
             return 1
         fi
     fi

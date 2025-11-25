@@ -1,7 +1,9 @@
 #!/bin/bash
 
+source "$(dirname "${BASH_SOURCE[0]}")/config.sh"
+
 detect_boot_mode() {
-    if [ -d "/sys/firmware/efi" ]; then
+    if [ -d "$EFI_FIRMWARE_PATH" ]; then
         echo "UEFI"
     else
         echo "Legacy"
@@ -15,4 +17,5 @@ find_efi_partition() {
     fi
     echo "$efi_part"
 }
+
 

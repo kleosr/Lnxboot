@@ -59,7 +59,7 @@ init_logging() {
     local log_file_path="${1:-$LOG_FILE}"
     LOG_FILE="$log_file_path"
     mkdir -p "$(dirname "$LOG_FILE")"
-    umask 077
+    umask ${LOG_FILE_UMASK}
     touch "$LOG_FILE"
     if [ ! -w "$LOG_FILE" ]; then
         echo "[ERROR] Cannot write to log file: $LOG_FILE" >&2

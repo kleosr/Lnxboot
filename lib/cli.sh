@@ -141,6 +141,73 @@ validate_device_path() {
     return 0
 }
 
+handle_iso_option() {
+    if [ -z "${2:-}" ]; then
+        echo "[ERROR] --iso requires a path argument"
+        print_usage
+        exit 1
+    fi
+    ISO_PATH="${2}"
+    shift 2
+}
+
+handle_target_option() {
+    if [ -z "${2:-}" ]; then
+        echo "[ERROR] --target requires a device argument"
+        print_usage
+        exit 1
+    fi
+    TARGET_PARTITION="${2}"
+    shift 2
+}
+
+handle_log_file_option() {
+    if [ -z "${2:-}" ]; then
+        echo "[ERROR] --log-file requires a path argument"
+        print_usage
+        exit 1
+    fi
+    LOG_FILE_CLI="${2}"
+    shift 2
+}
+
+handle_min_size_option() {
+    if [ -z "${2:-}" ]; then
+        echo "[ERROR] --min-size-gb requires a numeric argument"
+        print_usage
+        exit 1
+    fi
+    if ! validate_numeric_param "--min-size-gb" "${2}" 0; then
+        exit 1
+    fi
+    MIN_SIZE_GB="${2}"
+    shift 2
+}
+
+handle_copy_timeout_option() {
+    if [ -z "${2:-}" ]; then
+        echo "[ERROR] --copy-timeout-sec requires a numeric argument"
+        print_usage
+        exit 1
+    fi
+    if ! validate_numeric_param "--copy-timeout-sec" "${2}" 1; then
+        exit 1
+    fi
+    COPY_TIMEOUT_SEC="${2}"
+    shift 2
+}
+
+handle_positional_argument() {
+    local arg="$1"
+    if [ -z "${ISO_PATH}" ]; then
+        ISO_PATH="$arg"
+    else
+        echo "[ERROR] Unexpected positional argument: $arg"
+        print_usage
+        exit 1
+    fi
+}
+
 parse_cli_args() {
     if [ "$#" -eq 0 ]; then
         return 0
@@ -149,22 +216,10 @@ parse_cli_args() {
     while [ "$#" -gt 0 ]; do
         case "${1:-}" in
             --iso)
-                if [ -z "${2:-}" ]; then
-                    echo "[ERROR] --iso requires a path argument"
-                    print_usage
-                    exit 1
-                fi
-                ISO_PATH="${2}"
-                shift 2
+                handle_iso_option "$@"
                 ;;
             --target)
-                if [ -z "${2:-}" ]; then
-                    echo "[ERROR] --target requires a device argument"
-                    print_usage
-                    exit 1
-                fi
-                TARGET_PARTITION="${2}"
-                shift 2
+                handle_target_option "$@"
                 ;;
             --yes)
                 AUTO_YES=1
@@ -175,37 +230,13 @@ parse_cli_args() {
                 shift 1
                 ;;
             --log-file)
-                if [ -z "${2:-}" ]; then
-                    echo "[ERROR] --log-file requires a path argument"
-                    print_usage
-                    exit 1
-                fi
-                LOG_FILE_CLI="${2}"
-                shift 2
+                handle_log_file_option "$@"
                 ;;
             --min-size-gb)
-                if [ -z "${2:-}" ]; then
-                    echo "[ERROR] --min-size-gb requires a numeric argument"
-                    print_usage
-                    exit 1
-                fi
-                if ! validate_numeric_param "--min-size-gb" "${2}" 0; then
-                    exit 1
-                fi
-                MIN_SIZE_GB="${2}"
-                shift 2
+                handle_min_size_option "$@"
                 ;;
             --copy-timeout-sec)
-                if [ -z "${2:-}" ]; then
-                    echo "[ERROR] --copy-timeout-sec requires a numeric argument"
-                    print_usage
-                    exit 1
-                fi
-                if ! validate_numeric_param "--copy-timeout-sec" "${2}" 1; then
-                    exit 1
-                fi
-                COPY_TIMEOUT_SEC="${2}"
-                shift 2
+                handle_copy_timeout_option "$@"
                 ;;
             -h|--help)
                 print_usage
@@ -221,13 +252,7 @@ parse_cli_args() {
                 exit 1
                 ;;
             *)
-                if [ -z "${ISO_PATH}" ]; then
-                    ISO_PATH="$1"
-                else
-                    echo "[ERROR] Unexpected positional argument: $1"
-                    print_usage
-                    exit 1
-                fi
+                handle_positional_argument "$1"
                 shift 1
                 ;;
         esac

@@ -88,7 +88,7 @@ configure_grub() {
     return 0
 }
 
-create_grub_entry() {
+validate_grub_entry_params() {
     local partition_uuid="$1"
     local boot_mode="$2"
     local grub_custom_file="$3"
@@ -112,8 +112,24 @@ create_grub_entry() {
         return 1
     fi
     
+    return 0
+}
+
+check_grub_entry_exists() {
+    local grub_custom_file="$1"
+    local partition_uuid="$2"
+    
     if [ -f "$grub_custom_file" ] && grep -q "$partition_uuid" "$grub_custom_file" 2>/dev/null; then
         log_info "GRUB entry already exists for partition UUID: $partition_uuid"
+        return 0
+    fi
+    return 1
+}
+
+initialize_grub_custom_file() {
+    local grub_custom_file="$1"
+    
+    if [ -f "$grub_custom_file" ]; then
         return 0
     fi
     
@@ -123,26 +139,28 @@ create_grub_entry() {
         return 1
     fi
     
-    if [ ! -f "$grub_custom_file" ]; then
-        if ! cat > "$grub_custom_file" << 'EOF_GRUBCUST'
+        if ! cat > "$grub_custom_file" << EOF_GRUBCUST
 #!/bin/sh
-exec tail -n +3 $0
-# Custom GRUB menu entries
+exec tail -n +${GRUB_CUSTOM_FILE_HEADER_LINES} \$0
 EOF_GRUBCUST
-        then
-            log_error "Failed to create GRUB custom file: $grub_custom_file"
-            return 1
-        fi
-        
-        if ! chmod +x "$grub_custom_file" 2>&1 | tee -a "$LOG_FILE"; then
-            log_warn "Failed to make GRUB custom file executable: $grub_custom_file"
-        fi
+    then
+        log_error "Failed to create GRUB custom file: $grub_custom_file"
+        return 1
     fi
     
-    if [ "$boot_mode" = "UEFI" ]; then
-        if ! cat >> "$grub_custom_file" << EOF
+    if ! chmod +x "$grub_custom_file" 2>&1 | tee -a "$LOG_FILE"; then
+        log_warn "Failed to make GRUB custom file executable: $grub_custom_file"
+    fi
+    
+    return 0
+}
 
-# Windows Boot Entry - Added by Lnxboot (UEFI)
+create_uefi_grub_entry() {
+    local grub_custom_file="$1"
+    local partition_uuid="$2"
+    
+    if ! cat >> "$grub_custom_file" << EOF
+
 menuentry "Windows Installation (UEFI)" {
     insmod part_gpt
     insmod part_msdos
@@ -163,14 +181,19 @@ menuentry "Windows Installation (UEFI)" {
     fi
 }
 EOF
-        then
-            log_error "Failed to append UEFI GRUB entry"
-            return 1
-        fi
-    else
-        if ! cat >> "$grub_custom_file" << EOF
+    then
+        log_error "Failed to append UEFI GRUB entry"
+        return 1
+    fi
+    return 0
+}
 
-# Windows Boot Entry - Added by Lnxboot (Legacy BIOS)
+create_legacy_grub_entry() {
+    local grub_custom_file="$1"
+    local partition_uuid="$2"
+    
+    if ! cat >> "$grub_custom_file" << EOF
+
 menuentry "Windows Installation (Legacy)" {
     insmod part_msdos
     insmod part_gpt
@@ -184,13 +207,41 @@ menuentry "Windows Installation (Legacy)" {
         fi
     else
         echo "bootmgr not found"
-        sleep 3
+        sleep ${GRUB_BOOTMGR_ERROR_SLEEP_SEC}
         return
     fi
 }
 EOF
-        then
-            log_error "Failed to append Legacy BIOS GRUB entry"
+    then
+        log_error "Failed to append Legacy BIOS GRUB entry"
+        return 1
+    fi
+    return 0
+}
+
+create_grub_entry() {
+    local partition_uuid="$1"
+    local boot_mode="$2"
+    local grub_custom_file="$3"
+    
+    if ! validate_grub_entry_params "$partition_uuid" "$boot_mode" "$grub_custom_file"; then
+        return 1
+    fi
+    
+    if check_grub_entry_exists "$grub_custom_file" "$partition_uuid"; then
+        return 0
+    fi
+    
+    if ! initialize_grub_custom_file "$grub_custom_file"; then
+        return 1
+    fi
+    
+    if [ "$boot_mode" = "UEFI" ]; then
+        if ! create_uefi_grub_entry "$grub_custom_file" "$partition_uuid"; then
+            return 1
+        fi
+    else
+        if ! create_legacy_grub_entry "$grub_custom_file" "$partition_uuid"; then
             return 1
         fi
     fi
