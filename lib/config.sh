@@ -1,0 +1,47 @@
+#!/bin/bash
+
+readonly DEFAULT_MIN_SIZE_GB=32
+readonly DEFAULT_COPY_TIMEOUT_SEC=0
+readonly DEFAULT_LOG_FILE="/var/log/lnxboot.log"
+readonly DEFAULT_MOUNT_POINT="/mnt/windows_target"
+readonly DEFAULT_ISO_MOUNT="/mnt/iso_temp"
+readonly DEFAULT_SAFETY_MARGIN_GB=1
+
+readonly EXIT_ENC_LUKS=70
+readonly EXIT_ENC_BITLOCKER=71
+readonly EXIT_ENC_MANAGED=72
+
+readonly EFI_GUID="c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
+readonly EFI_SYSTEM_PARTITION_MOUNTS="/boot/efi|/efi"
+
+readonly GRUB_CUSTOM_FILE="/etc/grub.d/40_custom"
+readonly GRUB_CONFIG_PATH_PRIMARY="/boot/grub/grub.cfg"
+readonly GRUB_CONFIG_PATH_SECONDARY="/boot/grub2/grub.cfg"
+
+readonly REQUIRED_PACKAGES_NTFS="ntfs-3g"
+readonly REQUIRED_PACKAGES_GRUB_APT="grub-common grub-efi-amd64"
+readonly REQUIRED_PACKAGES_GRUB_DNF="grub2-tools grub2-efi-x64"
+readonly REQUIRED_PACKAGES_GRUB_PACMAN="grub"
+readonly REQUIRED_PACKAGES_GRUB_ZYPPER="grub2 grub2-x86_64-efi"
+readonly REQUIRED_PACKAGES_EFIBOOTMGR="efibootmgr"
+
+readonly WINDOWS_LABEL="Windows"
+readonly WINDOWS_ISO_SOURCES_PATH="sources"
+readonly WINDOWS_ISO_BOOT_WIM="boot.wim"
+readonly WINDOWS_ISO_INSTALL_WIM="install.wim"
+
+readonly BYTES_PER_GB=$((1024 * 1024 * 1024))
+
+readonly LOG_LEVEL_DEBUG=0
+readonly LOG_LEVEL_INFO=1
+readonly LOG_LEVEL_WARN=2
+readonly LOG_LEVEL_ERROR=3
+
+LOG_LEVEL=${LOG_LEVEL:-$LOG_LEVEL_INFO}
+
+MIN_SIZE_GB=${MIN_SIZE_GB:-$DEFAULT_MIN_SIZE_GB}
+COPY_TIMEOUT_SEC=${COPY_TIMEOUT_SEC:-$DEFAULT_COPY_TIMEOUT_SEC}
+LOG_FILE=${LOG_FILE:-$DEFAULT_LOG_FILE}
+MOUNT_POINT=${MOUNT_POINT:-$DEFAULT_MOUNT_POINT}
+ISO_MOUNT=${ISO_MOUNT:-$DEFAULT_ISO_MOUNT}
+
