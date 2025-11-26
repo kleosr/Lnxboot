@@ -80,13 +80,13 @@ install_packages() {
                 log_error "Failed to update package lists"
                 return 1
             fi
-            if ! apt-get install -y "$REQUIRED_PACKAGES_NTFS" $REQUIRED_PACKAGES_GRUB_APT "$REQUIRED_PACKAGES_EFIBOOTMGR" 2>&1 | tee -a "$LOG_FILE"; then
+            if ! apt-get install -y "$REQUIRED_PACKAGES_NTFS" "$REQUIRED_PACKAGES_GRUB_APT" "$REQUIRED_PACKAGES_EFIBOOTMGR" 2>&1 | tee -a "$LOG_FILE"; then
                 log_error "Failed to install packages with apt-get"
                 return 1
             fi
             ;;
         "dnf"|"yum")
-            if ! $pkg_manager install -y "$REQUIRED_PACKAGES_NTFS" $REQUIRED_PACKAGES_GRUB_DNF "$REQUIRED_PACKAGES_EFIBOOTMGR" 2>&1 | tee -a "$LOG_FILE"; then
+            if ! "$pkg_manager" install -y "$REQUIRED_PACKAGES_NTFS" "$REQUIRED_PACKAGES_GRUB_DNF" "$REQUIRED_PACKAGES_EFIBOOTMGR" 2>&1 | tee -a "$LOG_FILE"; then
                 log_error "Failed to install packages with $pkg_manager"
                 return 1
             fi
@@ -98,7 +98,7 @@ install_packages() {
             fi
             ;;
         "zypper")
-            if ! zypper install -y "$REQUIRED_PACKAGES_NTFS" $REQUIRED_PACKAGES_GRUB_ZYPPER "$REQUIRED_PACKAGES_EFIBOOTMGR" 2>&1 | tee -a "$LOG_FILE"; then
+            if ! zypper install -y "$REQUIRED_PACKAGES_NTFS" "$REQUIRED_PACKAGES_GRUB_ZYPPER" "$REQUIRED_PACKAGES_EFIBOOTMGR" 2>&1 | tee -a "$LOG_FILE"; then
                 log_error "Failed to install packages with zypper"
                 return 1
             fi

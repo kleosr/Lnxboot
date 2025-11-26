@@ -68,11 +68,10 @@ check_managed_volume_type() {
 
 scan_partition_for_encryption() {
     local partition="$1"
-    local found_code_ref="$2"
-    local findings_ref="$3"
     
     if [ ! -e "$partition" ]; then
         log_debug "Skipping non-existent partition: $partition"
+        echo "NONE:0:"
         return 1
     fi
     
@@ -81,31 +80,28 @@ scan_partition_for_encryption() {
     local ltype=$(lsblk -no TYPE "$partition" 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo "")
     
     if check_luks_encryption "$partition"; then
-        eval "$findings_ref=\"\${$findings_ref}\n - LUKS container detected on $partition\""
-        eval "$found_code_ref=$EXIT_ENC_LUKS"
+        local finding=" - LUKS container detected on $partition"
         log_error "LUKS encryption detected on: $partition"
+        echo "FOUND:$EXIT_ENC_LUKS:$finding"
         return 0
     fi
     
     if check_bitlocker_encryption "$partition" "$btype"; then
-        eval "$findings_ref=\"\${$findings_ref}\n - BitLocker signature detected on $partition (blkid TYPE: $btype)\""
-        if eval "[ \$$found_code_ref -eq 0 ]"; then
-            eval "$found_code_ref=$EXIT_ENC_BITLOCKER"
-        fi
+        local finding=" - BitLocker signature detected on $partition (blkid TYPE: $btype)"
         log_error "BitLocker encryption detected on: $partition"
+        echo "FOUND:$EXIT_ENC_BITLOCKER:$finding"
         return 0
     fi
     
     local managed_type=$(check_managed_volume_type "$fstype" "$ltype")
     if [ $? -eq 0 ]; then
-        eval "$findings_ref=\"\${$findings_ref}\n - Managed volume detected (filesystem type: ${managed_type}) on $partition\""
-        if eval "[ \$$found_code_ref -eq 0 ]"; then
-            eval "$found_code_ref=$EXIT_ENC_MANAGED"
-        fi
+        local finding=" - Managed volume detected (filesystem type: ${managed_type}) on $partition"
         log_error "Managed volume detected on: $partition (type: $managed_type)"
+        echo "FOUND:$EXIT_ENC_MANAGED:$finding"
         return 0
     fi
     
+    echo "NONE:0:"
     return 1
 }
 
@@ -126,7 +122,17 @@ encryption_scan_device() {
     fi
 
     for partition in $children; do
-        scan_partition_for_encryption "$partition" "found_code" "findings"
+        local scan_result=$(scan_partition_for_encryption "$partition")
+        local scan_status=$(echo "$scan_result" | cut -d: -f1)
+        local scan_code=$(echo "$scan_result" | cut -d: -f2)
+        local scan_finding=$(echo "$scan_result" | cut -d: -f3-)
+        
+        if [ "$scan_status" = "FOUND" ]; then
+            if [ "$found_code" -eq 0 ]; then
+                found_code=$scan_code
+            fi
+            findings="${findings}\n${scan_finding}"
+        fi
     done
 
     if [ -n "${findings}" ]; then

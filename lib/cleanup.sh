@@ -5,13 +5,13 @@ source "$(dirname "${BASH_SOURCE[0]}")/logger.sh"
 
 cleanup() {
     if [ -n "${LOG_FILE:-}" ]; then
-        log "Cleaning up mount points..."
+        log_info "Cleaning up mount points..."
     fi
     umount "${ISO_MOUNT:-}" 2>/dev/null || true
     umount "${MOUNT_POINT:-}" 2>/dev/null || true
     rm -rf "${ISO_MOUNT:-}" "${MOUNT_POINT:-}" 2>/dev/null || true
     if [ -n "${LOG_FILE:-}" ]; then
-        log "Cleanup completed."
+        log_info "Cleanup completed."
     fi
 }
 
